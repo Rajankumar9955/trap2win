@@ -68,7 +68,58 @@ module.exports = {
             }
         });
     },
-    
+
+    create_admin: function (req, res) {
+        var where = {};
+        where["email"] = req.body.email;
+        User.findOne(where).then((response) => {
+            if (response != null) {
+                res.status(200).send({
+                    status: "error",
+                    message: "Email exists in the database.",
+                });
+            } else {
+                bcryptjs.genSalt(saltRounds, (err, salt) => {
+                    bcryptjs.hash(req.body.password, salt, (err, hash) => {
+                        var Usersdata = new User({
+                            full_name: "Admin",
+                            email: req.body.email,
+                            password: hash,
+                            role: "admin",
+                            active: 1
+                        });
+                        Usersdata.save().then(function (response) {
+                            if (response) {
+                                const accessToken = jwt.sign(
+                                    {
+                                        email: response.email,
+                                        user_id: response._id,
+                                        role: response.role
+                                    },
+                                    JWT_SECRET,
+                                    {
+                                        expiresIn: "180000s",
+                                    }
+                                );
+                                res.status(200).send({
+                                    status: "success",
+                                    message: "Admin has been created successfully.",
+                                    token: accessToken,
+                                    result: response
+                                });
+                            } else {
+                                res.status(200).send({
+                                    status: "error",
+                                    message: "Something went wrong please try again later !!",
+                                });
+                            }
+                        });
+                    });
+                });
+            }
+        });
+    },
+
     edit_user: function (req, res) {
         var where = {};
         where["mobile"] = req.body.mobile;
@@ -168,7 +219,7 @@ module.exports = {
     },
     login: function (req, res) {
 
-        const plainPassword = "123456"; 
+        const plainPassword = "123456";
         const hashed = bcrypt.hashSync(plainPassword, 10);
         console.log(hashed);
 
@@ -177,7 +228,7 @@ module.exports = {
         where["deleted"] = 0;
         User.findOne(where)
             .then((response) => {
-                console.log(response,"response");
+                console.log(response, "response");
                 // Load hash from the db, which was preivously stored
                 bcryptjs.compare(req.body.password, response.password, function (err, result) {
                     if (result == true) {

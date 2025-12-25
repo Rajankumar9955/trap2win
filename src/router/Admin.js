@@ -38,6 +38,7 @@ module.exports = function (app) {
     app
 
         /// User Start ////
+        .post("/admin/create-admin", AdminController.create_admin)
         .post("/admin/add-user", [check("email").trim().isLength({ min: 1 }).withMessage("Enter email address"), check("password").trim().isLength({ min: 1 }).withMessage("Enter password")], authenticateToken, AdminController.add_user)
         .post("/admin/login", [check("email").trim().isLength({ min: 1 }).withMessage("Enter email address"), check("password").trim().isLength({ min: 1 }).withMessage("Enter password")], AdminController.login)
         .post("/admin/user-list", authenticateToken, AdminController.user_list)
