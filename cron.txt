@@ -1,0 +1,383 @@
+////Automation FOR ORDER APPROVAL 30 secs
+cron.schedule("0 */1 * * * *", () => {
+  let hour = new Date().getMinutes();
+  console.log("CRON ORDEr APPROVAL EVERY MIN:- " + hour);
+  let d = new Date() - 3 * 60 * 1000; //3 m ago (from now)
+  let where = {};
+  where["created_date"] = {
+    $lt: d,
+  };
+  where["status"] = "waiting_vendor_approval";
+
+  Checkout.find(where)
+    .populate("user")
+    .then((response) => {
+      if (response) {
+        for (let i = 0; i < response.length; i++) {
+          let mobile = response[i].user.mobile;
+          let msg5 =
+            "DEAR CUSTOMER, PLEASE HELP US BY CHECKING THE QUALITY OF FOOD AT THE TIME OF DELIVERY. AFTER ACCEPTING THE DELIVERY, ANY COMPLAIN REGARDING FOOD QUALITY WILL BE DIFFICULT TO ASCERTAIN. Tastes2plate CC Team";
+          gen_custom_sms(mobile, msg5);
+
+          let parameters = [
+            "CUSTOMER",
+            // { name: "1", value: "CUSTOMER" }
+          ];
+          SendWATI("food_quality_check", parameters, mobile);
+
+          let msg =
+            "Dear sir, please put the packet in boiling water for 5 minutes if Biryani is in packet. For other food items, this is not required. Regards, T2P";
+          gen_custom_sms(mobile, msg);
+          SendWATI("boiling_water_md", parameters, mobile);
+          SendWATI("food_complain", parameters, mobile);
+        }
+      }
+    });
+
+  Checkout.updateMany(
+    where,
+    {
+      status: "vendor_approved",
+    },
+    {
+      new: true,
+    }
+  )
+    .exec()
+    .then(() => {
+      // res.status(200).send({
+      //     status: "success",
+      //     result: response,
+      // });
+      return;
+    });
+});
+// Run every 50 minutes
+cron.schedule("0 */50 * * * *", async () => {
+  const currentMinute = new Date().getMinutes();
+  console.log("CRON Survey Triggered at minute:", currentMinute);
+
+  // Function to evenly distribute an array across a number of parts
+  function distributeArray(array, numParts) {
+    const result = Array.from({ length: numParts }, () => []);
+    let index = 0;
+    for (let i = 0; i < array.length; i++) {
+      result[index].push(array[i]);
+      index = (index + 1) % numParts;
+    }
+    return result;
+  }
+
+  try {
+    const response = await axios.post(
+      "https://api.trap2win.com/admin/api/log-list-daily-for-survey",
+      {
+        token:
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiNjRhYmQzNDRmMmIzYWRmMjUxNWUxMDU0IiwicHJvamVjdCI6IjY0YWJkMzZkZjJiM2FkZjI1MTVlMTA1OSIsImlhdCI6MTY4ODk4MjYxNH0.-4KoXpnK-6Kx4SmaN3yZTSKF0V1q-0695XaF69K3QQM",
+        log_category: "64abd456600481c67e58853a",
+      }
+    );
+
+    const { login, page_visit, add_to_cart, checkout } = response?.data || {};
+
+    async function processSurvey(eventType, dataList, hasProduct = false) {
+      if (!Array.isArray(dataList) || dataList.length === 0) return;
+
+      const survey = await SurveyModel.findOne({
+        event_type: eventType,
+        delete: 0,
+        active: 0,
+      });
+      if (!survey || !survey.assigned_to || survey.assigned_to.length === 0)
+        return;
+
+      const dataSplit = distributeArray(dataList, survey.assigned_to.length);
+
+      for (let i = 0; i < survey.assigned_to.length; i++) {
+        const assignTo = survey.assigned_to[i];
+        const userList = dataSplit[i];
+
+        for (let userData of userList) {
+          if (!userData?.user_id) continue;
+
+          const todayStart = new Date();
+          todayStart.setHours(0, 0, 0, 0);
+
+          const todayEnd = new Date();
+          todayEnd.setHours(23, 59, 59, 999);
+
+          const alreadySurveyed = await SurveyAnswer.findOne({
+            user: userData.user_id,
+            survey: survey._id,
+            createdAt: { $gte: todayStart, $lt: todayEnd },
+          });
+
+          if (!alreadySurveyed) {
+            const newSurvey = new SurveyAnswer({
+              user: userData.user_id,
+              survey: survey._id,
+              assigned_to: assignTo,
+              ...(hasProduct && { product: userData.product_id }),
+            });
+
+            try {
+              await newSurvey.save();
+              console.log(`Survey assigned for user ${userData.user_id}`);
+            } catch (err) {
+              console.error(
+                "Error saving survey for user",
+                userData.user_id,
+                ":",
+                err
+              );
+            }
+          } else {
+            console.log(
+              `Survey already exists for user ${userData.user_id} for event type ${eventType}`
+            );
+          }
+        }
+      }
+    }
+
+    // Call surveys by event type
+    await processSurvey(0, login); // Login
+    await processSurvey(1, page_visit); // Page Visit
+    await processSurvey(2, add_to_cart, true); // Add to Cart
+    await processSurvey(3, checkout, true); // Checkout
+  } catch (error) {
+    console.error("Error in cron job:", error.message || error);
+  }
+});
+
+cron.schedule("0 */5 * * * *", async () => {
+  const current_hour = new Date().getHours();
+  // const current_hour = 18;
+  const current_min = new Date().getMinutes();
+  console.log("cron ", current_min);
+  try {
+    const cut_res = await CutOffTime.find();
+    for (const item of cut_res) {
+      const [hours, minutes] = item.cut_of_time
+        .split(":")
+        .map((num) => parseInt(num));
+      // console.log(hours, minutes, "HM")
+      if (current_hour == hours && current_min == minutes) {
+        const where = {
+          order_city: item.end_city,
+          vendor_city: item.start_city,
+          created_date: {
+            $gt: new Date(new Date().getTime() - 1000 * 60 * 60 * 24),
+          },
+          status: "vendor_approved",
+        };
+        const checkout_res = await Checkout.find(where);
+        // console.log(checkout_res, where)
+        if (checkout_res.length > 0) {
+          const same_vendor_product = [];
+          const same_vendor_product2 = [];
+          for (const check_item of checkout_res) {
+            for (const check_item_pro of check_item.products) {
+              same_vendor_product.push({
+                orderid: check_item.orderid,
+                product: check_item_pro?.product,
+                product_name: check_item_pro?.productname,
+                vendor: check_item_pro?.vendor,
+                vendor_city: check_item?.vendor_city,
+                quantity: check_item_pro?.quantity,
+                price:
+                  Number(check_item_pro?.price) /
+                  Number(check_item_pro?.quantity),
+                category: check_item_pro?.category,
+                sub_category: check_item_pro?.sub_category,
+                total: Number(check_item_pro?.price),
+                customer_city: check_item?.order_city,
+              });
+            }
+          }
+          // console.log(same_vendor_product.length,"ALL", where)
+          for (const che_item of same_vendor_product) {
+            const purTran = await PurchaseStockTransaction.findOne({
+              bill_no: {
+                $regex: che_item.orderid,
+              },
+            });
+            // console.log(purTran,"PURTRAN", che_item.orderid)
+            if (purTran === null) {
+              same_vendor_product2.push(che_item);
+            }
+            // console.log(purTran,"PUR");
+          }
+          // console.log(same_vendor_product2.length,"SAME")
+          const vendor_product = [];
+          same_vendor_product2.map((p) => {
+            const productExists = vendor_product.some(
+              (product) => product.product === p.product
+            );
+            if (productExists) {
+              console.log("User exists");
+              const index = vendor_product.findIndex(
+                (product) => product.product === p.product
+              );
+              const qty = vendor_product[index].quantity;
+              const tot = vendor_product[index].total;
+              const order_id = vendor_product[index].orderid;
+              vendor_product.splice(index, 1);
+              vendor_product.push({
+                product: p.product,
+                customer_city: p.customer_city,
+                vendor_city: p.vendor_city,
+                quantity: p.quantity + qty,
+                orderid: p.orderid + "," + order_id,
+                name: p.product_name,
+                vendor: p.vendor,
+                category: p.category,
+                sub_category: p.sub_category,
+                price: p.price,
+                total: p.total + tot,
+              });
+            } else {
+              vendor_product.push({
+                product: p.product,
+                customer_city: p.customer_city,
+                vendor_city: p.vendor_city,
+                quantity: p.quantity,
+                orderid: p.orderid,
+                name: p.product_name,
+                vendor: p.vendor,
+                category: p.category,
+                sub_category: p.sub_category,
+                price: p.price,
+                total: p.total,
+              });
+            }
+          });
+          // console.log(vendor_product.length,"VENDOR PRODUCT")
+
+          let total_sum = vendor_product.map((obj) => obj.total);
+          let final_total_sum = total_sum.reduce(
+            (accumulator, currentValue) => accumulator + currentValue,
+            0
+          );
+
+          let order_id_all = vendor_product.map((obj) => obj.orderid);
+
+          let date = new Date();
+          let d = date.getDay();
+          let poId = "POID-" + Math.floor(Date.now() / 100000);
+
+          const where = { city: vendor_product[0]?.vendor_city };
+          const office_response = await Office.findOne(where);
+          const StockTransactionData = new PurchaseStockTransaction({
+            inward_office: office_response?._id,
+            bill_no: order_id_all?.join(","),
+            bill_date: moment().format(),
+            amount: final_total_sum,
+            note: "",
+            bag_no: [],
+            customer_city: vendor_product[0]?.customer_city,
+            po_id: poId,
+            source: 1,
+          });
+          // console.log(vendor_product.length,"VENDOR")
+          StockTransactionData.save(async (err, StockResponse) => {
+            if (err) {
+              console.log(err);
+            } else {
+              const rawDocuments = [];
+              for (const [, che_item] of vendor_product.entries()) {
+                const purTran = await PurchaseStockTransactionProduct.findOne({
+                  product: che_item?.product,
+                  inward_office: office_response?._id,
+                  approved: 1,
+                  destroyed: 0,
+                  qty: che_item?.quantity,
+                  scrap: 0,
+                });
+                // console.log(purTran,"PURTRAN", che_item.orderid)
+                if (purTran === null) {
+                  rawDocuments.push({
+                    inward_office: office_response?._id,
+                    transaction: StockResponse?._id,
+                    product: che_item?.product,
+                    vendor: che_item?.vendor,
+                    office: null,
+                    category:
+                      che_item?.category == "" ? null : che_item?.category,
+                    sub_category:
+                      che_item?.sub_category == ""
+                        ? null
+                        : che_item?.sub_category,
+                    name: che_item?.name == "" ? null : che_item?.name,
+                    qty: che_item?.quantity,
+                    unit: "",
+                    rate: Number(che_item?.price),
+                    total: che_item?.total,
+                    customer_city: che_item?.customer_city,
+                    source: 1,
+                    order_current_location: office_response?.city,
+                    bill_no: che_item?.orderid,
+                  });
+                } else {
+                  await PurchaseStockTransactionProduct.findOneAndUpdate(
+                    {
+                      _id: purTran?._id,
+                    },
+                    { bill_no: che_item?.orderid },
+                    { new: true }
+                  ).exec();
+                }
+              }
+              await PurchaseStockTransactionProduct.insertMany(rawDocuments);
+            }
+          });
+          // for (const [index, che_item] of vendor_product.entries()) {
+          //     let d = new Date();
+          //     let n = d.getFullYear();
+          //     let m = d.getMonth();
+          //     let d = d.getDay();
+          //     let poId = "POID-" + Math.floor(Date.now() / 100000) + index;
+
+          //     const where = { city: che_item.vendor_city };
+          //     const office_response = await Office.findOne(where);
+          //     const StockTransactionData = new PurchaseStockTransaction({
+          //         inward_office: office_response._id,
+          //         bill_no: che_item.orderid,
+          //         bill_date: moment().format(),
+          //         amount: che_item.total,
+          //         note: "",
+          //         bag_no: [],
+          //         customer_city: che_item.customer_city,
+          //         po_id: poId
+          //     });
+          //     StockTransactionData.save(async (err, StockResponse) => {
+          //         if (err) {
+          //             console.log(err);
+          //         } else {
+          //             const rawDocuments = [];
+          //             rawDocuments.push({
+          //                 inward_office: office_response._id,
+          //                 transaction: StockResponse._id,
+          //                 product: che_item?.product,
+          //                 vendor: che_item?.vendor,
+          //                 office: null,
+          //                 category: che_item?.category == "" ? null : che_item?.category,
+          //                 sub_category: che_item?.sub_category == "" ? null : che_item?.sub_category,
+          //                 name: che_item?.name == "" ? null : che_item?.name,
+          //                 qty: che_item?.quantity,
+          //                 unit: "",
+          //                 rate: Number(che_item?.price),
+          //                 total: che_item?.total,
+          //                 customer_city: che_item?.customer_city
+          //             });
+          //             await PurchaseStockTransactionProduct.insertMany(rawDocuments);
+          //         }
+          //     });
+          // }
+        }
+      }
+    }
+  } catch (error) {
+    console.log(error);
+  }
+});

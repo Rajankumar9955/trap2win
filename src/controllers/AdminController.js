@@ -218,10 +218,7 @@ module.exports = {
         // });
     },
     login: function (req, res) {
-
-        const plainPassword = "123456";
-        const hashed = bcrypt.hashSync(plainPassword, 10);
-        console.log(hashed);
+        ;
 
         var where = {};
         where["email"] = req.body.email;
